@@ -1,28 +1,29 @@
 {
-  "name": "@jsonic/csv",
-  "version": "0.10.0",
-  "description": "This plugin allows the [Jsonic](https://jsonic.senecajs.org) JSON parser to support csv syntax.",
-  "main": "dist/csv.js",
+  "name": "@jsonic/zon",
+  "version": "0.1.0",
+  "description": "This plugin allows the [Jsonic](https://jsonic.senecajs.org) JSON parser to support Zig Object Notation (ZON) syntax.",
+  "main": "dist/zon.js",
   "type": "commonjs",
-  "browser": "csv.min.js",
-  "types": "dist/csv.d.ts",
-  "homepage": "https://github.com/jsonicjs/csv",
+  "browser": "zon.min.js",
+  "types": "dist/zon.d.ts",
+  "homepage": "https://github.com/jsonicjs/zon",
   "keywords": [
-    "pattern",
-    "matcher",
+    "zon",
+    "zig",
+    "jsonic",
+    "parser",
     "object",
-    "property",
     "json"
   ],
   "author": "Richard Rodger (http://richardrodger.com)",
   "repository": {
     "type": "git",
-    "url": "git://github.com/jsonicjs/csv.git"
+    "url": "git://github.com/jsonicjs/zon.git"
   },
   "scripts": {
     "test": "node --enable-source-maps --test \"dist-test/*.test.js\"",
     "test-some": "node --enable-source-maps --test-name-pattern=\"$npm_config_pattern\" --test \"dist-test/*.test.js\"",
-    "test-watch": "node --test --watch dist-test/csv.test.js",
+    "test-watch": "node --test --watch dist-test/zon.test.js",
     "embed": "node embed-grammar.js",
     "watch": "tsc --build src test -w",
     "build": "node embed-grammar.js && tsc --build src test",
@@ -40,7 +41,6 @@
   ],
   "devDependencies": {
     "@types/node": "^25.6.0",
-    "csv-spectrum": "^2.0.0",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {

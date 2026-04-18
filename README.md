@@ -1,21 +1,30 @@
-# @jsonic/csv
+# @jsonic/zon
 
 A [Jsonic](https://jsonic.senecajs.org) syntax plugin that parses
-CSV text into objects or arrays, with support for headers, quoted
-fields, custom delimiters, streaming, and strict/non-strict modes.
-Available for TypeScript and Go.
+[Zig Object Notation (ZON)](https://ziglang.org/documentation/master/#ZON)
+text into objects, arrays, and scalar values. Available for
+TypeScript and Go.
 
+ZON is the data format used for Zig `build.zig.zon` manifests and
+similar configuration files. It is based on Zig anonymous struct
+literals, and looks like this:
 
-[![npm version](https://img.shields.io/npm/v/@jsonic/csv.svg)](https://npmjs.com/package/@jsonic/csv)
-[![build](https://github.com/jsonicjs/csv/actions/workflows/build.yml/badge.svg)](https://github.com/jsonicjs/csv/actions/workflows/build.yml)
-[![Coverage Status](https://coveralls.io/repos/github/jsonicjs/csv/badge.svg?branch=main)](https://coveralls.io/github/jsonicjs/csv?branch=main)
-[![Known Vulnerabilities](https://snyk.io/test/github/jsonicjs/csv/badge.svg)](https://snyk.io/test/github/jsonicjs/csv)
-[![DeepScan grade](https://deepscan.io/api/teams/5016/projects/22466/branches/663906/badge/grade.svg)](https://deepscan.io/dashboard#view=project&tid=5016&pid=22466&bid=663906)
-[![Maintainability](https://api.codeclimate.com/v1/badges/10e9bede600896c77ce8/maintainability)](https://codeclimate.com/github/jsonicjs/csv/maintainability)
-
-| ![Voxgig](https://www.voxgig.com/res/img/vgt01r.png) | This open source module is sponsored and supported by [Voxgig](https://www.voxgig.com). |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
-
+```zon
+.{
+    .name = "example",
+    .version = "0.0.1",
+    .dependencies = .{
+        .foo = .{
+            .url = "https://example.com/foo.tar.gz",
+            .hash = "1220deadbeef",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "src",
+    },
+}
+```
 
 ## Quick example
 
@@ -23,37 +32,52 @@ Available for TypeScript and Go.
 
 ```typescript
 import { Jsonic } from 'jsonic'
-import { Csv } from '@jsonic/csv'
+import { Zon } from '@jsonic/zon'
 
-const parse = Jsonic.make().use(Csv)
+const parse = Jsonic.make().use(Zon)
 
-parse("name,age\nAlice,30\nBob,25")
-// [{ name: 'Alice', age: '30' }, { name: 'Bob', age: '25' }]
+parse('.{ .name = "Alice", .age = 30 }')
+// { name: 'Alice', age: 30 }
 
-parse('a,b\n1,"hello, world"')
-// [{ a: '1', b: 'hello, world' }]
+parse('.{ 1, 2, 3 }')
+// [1, 2, 3]
 ```
 
 **Go**
 
 ```go
-import csv "github.com/jsonicjs/csv/go"
+import zon "github.com/jsonicjs/zon/go"
+import jsonic "github.com/jsonicjs/jsonic/go"
 
-result, _ := csv.Parse("name,age\nAlice,30\nBob,25")
-// [{name:Alice age:30} {name:Bob age:25}]
+j := jsonic.Make()
+j.UseDefaults(zon.Zon, zon.Defaults)
+
+result, _ := j.Parse(`.{ .name = "Alice", .age = 30 }`)
+// map[string]any{"name": "Alice", "age": 30}
 ```
 
+## Supported syntax
 
-## Documentation
+- Anonymous struct literals: `.{ .field = value, ... }`
+- Tuple / array literals: `.{ value, value, ... }`
+- Field names: `.identifier`
+- Enum literals (used as values): `.identifier` (parsed as bare strings)
+- Strings: `"..."` with Zig escape sequences (`\n`, `\r`, `\t`, `\\`, `\"`, `\'`)
+- Multi-line strings: consecutive lines starting with `\\`
+- Numbers: decimal, `0x` hex, `0o` octal, `0b` binary, with `_` separators
+- Character literals: `'x'`, `'\n'`, `'\x41'`, `'\u{1F600}'`
+- Keywords: `true`, `false`, `null`
+- Line comments: `// ...`
+- Trailing commas allowed
 
-Full documentation following the [Diataxis](https://diataxis.fr)
-framework (tutorials, how-to guides, explanation, reference):
+## Options
 
-- [TypeScript documentation](doc/csv-ts.md)
-- [Go documentation](doc/csv-go.md)
-
+| Option         | Default | Description                                          |
+| -------------- | ------- | ---------------------------------------------------- |
+| `charAsNumber` | `false` | Parse character literals as numeric code points.     |
+| `enumTag`      | `null`  | If set, wrap enum literals in `{ [enumTag]: name }`. |
 
 ## License
 
-Copyright (c) 2021-2025 Richard Rodger and other contributors,
+Copyright (c) 2025 Richard Rodger and other contributors,
 [MIT License](LICENSE).
