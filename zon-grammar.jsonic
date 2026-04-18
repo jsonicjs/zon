@@ -1,0 +1,50 @@
+# ZON Grammar Definition
+# Parses Zig Object Notation (ZON) - a data format based on Zig anonymous
+# struct literals.
+#
+# Example:
+#   .{
+#       .name = "example",
+#       .version = "0.0.1",
+#       .deps = .{ .foo = .{ .url = "https://..." } },
+#       .paths = .{ "build.zig", "src" },
+#   }
+#
+# The custom zon-dot lex matcher distinguishes struct (map) and tuple (list)
+# openings at lex time by peeking ahead:
+#   .{  followed by  .ident =    -> emits #OB  (struct / map)
+#   .{  otherwise                -> emits #OS  (tuple / list)
+# Both close on } which lexes as #CB. The list rules below use #CB (not
+# the default #CS) as the list terminator so that the single } character
+# closes both struct and tuple literals.
+#
+# A bare .identifier emits #TX with val = identifier (the leading dot is
+# stripped). This token is both a valid KEY (when followed by =) and a
+# valid VAL (when used as an enum literal).
+
+{
+  rule: val: open: [
+    # Empty .{} -> empty list.
+    { s: '#OS #CB' b: 2 p: list g: 'zon,list,empty' }
+  ]
+
+  rule: list: open: [
+    { s: '#OS #CB' b: 1 g: 'zon,list,empty' }
+    { s: '#OS' p: elem g: 'zon,list,open' }
+  ]
+  rule: list: close: [
+    { s: '#CB' g: 'zon,list,close' }
+  ]
+
+  rule: elem: close: [
+    { s: '#CA #CB' b: 1 g: 'zon,elem,trailing' }
+    { s: '#CA' r: elem g: 'zon,elem,next' }
+    { s: '#CB' b: 1 g: 'zon,elem,end' }
+  ]
+
+  rule: pair: close: [
+    { s: '#CA #CB' b: 1 g: 'zon,pair,trailing' }
+    { s: '#CA' r: pair g: 'zon,pair,next' }
+    { s: '#CB' b: 1 g: 'zon,pair,end' }
+  ]
+}

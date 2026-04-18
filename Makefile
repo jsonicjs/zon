@@ -31,8 +31,8 @@ clean-go:
 # Publish Go module: make publish-go V=0.1.7
 publish-go: test-go
 	@test -n "$(V)" || (echo "Usage: make publish-go V=x.y.z" && exit 1)
-	sed -i '' 's/^const Version = ".*"/const Version = "$(V)"/' go/csv.go
-	git add go/csv	.go
+	sed -i '' 's/^const Version = ".*"/const Version = "$(V)"/' go/zon.go
+	git add go/zon.go
 	git commit -m "go: v$(V)"
 	git tag go/v$(V)
 	git push origin main go/v$(V)
