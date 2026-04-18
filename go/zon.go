@@ -49,31 +49,34 @@ const grammarText = `
 # A bare .identifier emits #TX with val = identifier (the leading dot is
 # stripped). This token is both a valid KEY (when followed by =) and a
 # valid VAL (when used as an enum literal).
+#
+# The grammar is applied with { rule: { alt: { g: 'zon' } } } so every
+# alt below is automatically tagged with the 'zon' group.
 
 {
   rule: val: open: [
     # Empty .{} -> empty list.
-    { s: '#OS #CB' b: 2 p: list g: 'zon,list,empty' }
+    { s: '#OS #CB' b: 2 p: list g: 'list,empty' }
   ]
 
   rule: list: open: [
-    { s: '#OS #CB' b: 1 g: 'zon,list,empty' }
-    { s: '#OS' p: elem g: 'zon,list,open' }
+    { s: '#OS #CB' b: 1 g: 'list,empty' }
+    { s: '#OS' p: elem g: 'list,open' }
   ]
   rule: list: close: [
-    { s: '#CB' g: 'zon,list,close' }
+    { s: '#CB' g: 'list,close' }
   ]
 
   rule: elem: close: [
-    { s: '#CA #CB' b: 1 g: 'zon,elem,trailing' }
-    { s: '#CA' r: elem g: 'zon,elem,next' }
-    { s: '#CB' b: 1 g: 'zon,elem,end' }
+    { s: '#CA #CB' b: 1 g: 'elem,trailing' }
+    { s: '#CA' r: elem g: 'elem,next' }
+    { s: '#CB' b: 1 g: 'elem,end' }
   ]
 
   rule: pair: close: [
-    { s: '#CA #CB' b: 1 g: 'zon,pair,trailing' }
-    { s: '#CA' r: pair g: 'zon,pair,next' }
-    { s: '#CB' b: 1 g: 'zon,pair,end' }
+    { s: '#CA #CB' b: 1 g: 'pair,trailing' }
+    { s: '#CA' r: pair g: 'pair,next' }
+    { s: '#CB' b: 1 g: 'pair,end' }
   ]
 }
 `
@@ -191,7 +194,14 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if err := j.Grammar(gs); err != nil {
+	// Tag every alt in this grammar with the 'zon' group so callers can
+	// selectively exclude zon alts via rule.exclude.
+	setting := &jsonic.GrammarSetting{
+		Rule: &jsonic.GrammarSettingRule{
+			Alt: &jsonic.GrammarSettingAlt{G: "zon"},
+		},
+	}
+	if err := j.Grammar(gs, setting); err != nil {
 		return fmt.Errorf("zon: failed to apply grammar: %w", err)
 	}
 
