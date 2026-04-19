@@ -94,8 +94,41 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 	charAsNumber := toBool(options["charAsNumber"])
 	enumTag := toString(options["enumTag"])
 
+	// If enumTag is set, wrap enum-literal values into `{ [enumTag]: name }`.
+	// Runs before the default `@val-bc` (via /prepend) so it takes precedence.
+	refs := map[jsonic.FuncRef]any{}
+	if enumTag != "" {
+		refs["@val-bc/prepend"] = jsonic.StateAction(func(r *jsonic.Rule, _ *jsonic.Context) {
+			if !jsonic.IsUndefined(r.Node) {
+				return
+			}
+			if r.Child != nil && !jsonic.IsUndefined(r.Child.Node) {
+				return
+			}
+			if r.OS == 0 || r.O0 == nil {
+				return
+			}
+			tkn := r.O0
+			if tkn.Use == nil {
+				return
+			}
+			if _, ok := tkn.Use["zonEnum"]; !ok {
+				return
+			}
+			if name, ok := tkn.Val.(string); ok {
+				r.Node = map[string]any{enumTag: name}
+			}
+		})
+	}
+
+	gs, err := parseGrammarText(grammarText, refs)
+	if err != nil {
+		return err
+	}
+	// All jsonic option overrides live on the grammar object so the plugin
+	// applies them atomically alongside its rule alts.
 	eqSrc := "="
-	jsonicOptions := jsonic.Options{
+	gs.Options = &jsonic.Options{
 		Rule: &jsonic.RuleOptions{
 			// Remove jsonic extensions (implicit maps/lists, top-level commas,
 			// path dives). ZON uses explicit struct literals only.
@@ -159,40 +192,6 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 				"zonChar":        {Order: 120000, Make: buildZonCharMatcher(charAsNumber)},
 			},
 		},
-	}
-
-	j.SetOptions(jsonicOptions)
-
-	// If enumTag is set, wrap enum-literal values into `{ [enumTag]: name }`.
-	// Runs before the default `@val-bc` (via /prepend) so it takes precedence.
-	refs := map[jsonic.FuncRef]any{}
-	if enumTag != "" {
-		refs["@val-bc/prepend"] = jsonic.StateAction(func(r *jsonic.Rule, _ *jsonic.Context) {
-			if !jsonic.IsUndefined(r.Node) {
-				return
-			}
-			if r.Child != nil && !jsonic.IsUndefined(r.Child.Node) {
-				return
-			}
-			if r.OS == 0 || r.O0 == nil {
-				return
-			}
-			tkn := r.O0
-			if tkn.Use == nil {
-				return
-			}
-			if _, ok := tkn.Use["zonEnum"]; !ok {
-				return
-			}
-			if name, ok := tkn.Val.(string); ok {
-				r.Node = map[string]any{enumTag: name}
-			}
-		})
-	}
-
-	gs, err := parseGrammarText(grammarText, refs)
-	if err != nil {
-		return err
 	}
 	// Tag every alt in this grammar with the 'zon' group so callers can
 	// selectively exclude zon alts via rule.exclude.
