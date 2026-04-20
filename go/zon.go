@@ -213,6 +213,50 @@ var Defaults = map[string]any{
 	"enumTag":      "",
 }
 
+// ZonOptions is a typed wrapper for common plugin options.
+// Fields are pointers so callers can express "omit" (nil) vs "set".
+type ZonOptions struct {
+	// CharAsNumber, when true, parses Zig char literals ('x') as numeric
+	// code points. When false (default), they are parsed as one-char strings.
+	CharAsNumber *bool
+	// EnumTag, when non-empty, wraps enum literals (.foo used as value) in
+	// map[string]any{<EnumTag>: name} instead of producing the bare string.
+	EnumTag string
+}
+
+func (o ZonOptions) toMap() map[string]any {
+	m := map[string]any{}
+	if o.CharAsNumber != nil {
+		m["charAsNumber"] = *o.CharAsNumber
+	}
+	if o.EnumTag != "" {
+		m["enumTag"] = o.EnumTag
+	}
+	return m
+}
+
+// MakeJsonic returns a reusable Jsonic instance configured for ZON parsing.
+// Use this when parsing multiple ZON strings with the same options.
+func MakeJsonic(opts ...ZonOptions) *jsonic.Jsonic {
+	j := jsonic.Make()
+	var m map[string]any
+	if len(opts) > 0 {
+		m = opts[0].toMap()
+	}
+	if err := j.UseDefaults(Zon, Defaults, m); err != nil {
+		// Plugin registration errors are programming errors with static
+		// inputs; surface them via panic rather than silent misbehavior.
+		panic(fmt.Sprintf("zon: plugin initialisation failed: %v", err))
+	}
+	return j
+}
+
+// Parse parses a ZON string and returns the resulting value. Convenience
+// wrapper around MakeJsonic(opts...).Parse(src).
+func Parse(src string, opts ...ZonOptions) (any, error) {
+	return MakeJsonic(opts...).Parse(src)
+}
+
 // Custom lex matcher for `.`-prefixed tokens:
 //
 //	`.{`          -> #OB if followed by `.ident =`, else #OS
