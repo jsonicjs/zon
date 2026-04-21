@@ -166,54 +166,57 @@ ZON is not a superset of JSON — it uses a distinct opening syntax
 prefixed with `.`. The plugin reshapes Jsonic into a ZON parser by
 combining four mechanisms:
 
-1. **Custom lex matchers** for the `.`-prefixed tokens:
+1. **Token remapping**: `.` is registered as a new `#DT` token, `=`
+   replaces `:` as `#CL`, and `[`, `]` drop their default mappings so
+   stray brackets produce a syntax error. `{` and `}` keep their
+   defaults (`#OB`/`#CB`).
 
-   - `.{` peeks ahead and emits `#OB` (struct/map) if followed by
-     `<ws>.ident<ws>=` or `#OS` (tuple/list) otherwise. This resolves
-     the ambiguity at lex time so only two-token grammar lookahead is
-     needed.
-   - `.identifier` emits `#TX` whose `Val` is the identifier (dot
-     stripped) and whose `Use["zonEnum"]` flag marks it for optional
-     enum-tag wrapping.
-   - `\\`-prefixed multi-line strings emit a single `#ST` token with
-     the joined content.
-   - Character literals (`'x'`, `'\n'`, `'\xNN'`, `'\u{...}'`) emit a
-     `#NR` token whose value is either the one-char string or the
-     numeric code point (controlled by `CharAsNumber`).
+2. **Multi-token grammar lookahead**: rather than a custom lex
+   matcher for `.{` / `.identifier`, the grammar uses jsonic's
+   N-token alt lookahead to recognise struct and tuple literals
+   directly from the token stream:
 
-2. **Token remapping**: `#CL` is rebound from `:` to `=`; `#OB`,
-   `#OS`, and `#CS` drop their default char mappings so stray `{`,
-   `[`, or `]` in source produce a syntax error rather than silently
-   opening a map or list.
+   - `#DT #OB #DT #TX #CL` → struct literal (push `map` rule)
+   - `#DT #OB #CB`         → empty tuple literal
+   - `#DT #OB`             → non-empty tuple literal (push `list`)
+   - `#DT #TX`             → enum literal used as a value
 
-3. **Key-set restriction**: the `KEY` token set is narrowed to `#TX`
-   alone so only identifiers (not numbers or strings) can appear on
-   the left of `=`.
+   Inside the rules, `#DT #TX #CL` introduces a pair and `#CA #CB`
+   absorbs trailing commas.
 
-4. **Grammar overlay**: small alts prepended to `val`, `list`,
-   `elem`, and `pair` swap the list terminator from `#CS` to `#CB`
-   and accept trailing commas before `}`.
+3. **Token-set restriction**: `KEY` is narrowed to `[#TX]` so only
+   identifiers can appear on the left of `=`; `VAL` is narrowed to
+   `[#NR, #ST, #VL]` so a bare identifier cannot substitute for a
+   value (enum literals must be written `.name`).
 
-All four are applied atomically through the `GrammarSpec` passed to
-`j.Grammar(gs, &jsonic.GrammarSetting{...G: "zon"})`, which tags
-every ZON alt with the `zon` group.
+4. **Plugin-only lex matchers** (things the default lexer can't
+   express):
+   - `zonMultiString`: consecutive `\\`-prefixed lines merged into a
+     single `#ST` token.
+   - `zonChar`: Zig char literals (`'x'`, `'\n'`, `'\xNN'`,
+     `'\u{...}'`) emitted as `#NR` tokens whose value is a one-char
+     string or a numeric code point (`CharAsNumber`).
+
+All of the above are applied atomically through the `GrammarSpec`
+passed to `j.Grammar(gs, &jsonic.GrammarSetting{...G: "zon"})`,
+which tags every ZON alt with the `zon` group.
 
 ### Struct vs tuple disambiguation
 
 ZON uses the same `.{ ... }` opener for both struct literals (with
-`.field = value` pairs) and tuple literals (bare values). Jsonic's
-parser allows only two tokens of lookahead, so the decision is made
-by the lex matcher: it scans past the opening `.{`, whitespace, and
-`//` comments, then checks for `.ident` followed by `=`. This means
-the grammar only ever sees an already-classified `#OB` or `#OS`
-token.
+`.field = value` pairs) and tuple literals (bare values). The five
+positions of the `val` rule's first alt (`#DT #OB #DT #TX #CL`) give
+the parser enough lookahead to commit to the struct branch only when
+the actual tokens `.{.ident =` are present; anything else falls
+through to the `#DT #OB` tuple branch.
 
 ### Enum literals as values
 
-A bare `.foo` token is both a valid key (when followed by `=`) and a
-valid value (enum literal). The `#TX` token set membership in both
-`KEY` and `VAL` lets the parser pick the right interpretation by
-context — no grammar branching is needed.
+A bare `.foo` token sequence (`#DT #TX`) is handled by a dedicated
+`val` alt whose action sets the node to the identifier string (or
+wraps it in `map[string]any{enumTag: name}` when the `EnumTag`
+option is set). The pair rule requires a trailing `#CL`, so the same
+`.foo` can't be mistaken for a pair opener without an `=` following.
 
 
 ## Reference

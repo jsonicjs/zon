@@ -38,24 +38,29 @@ const grammarText = `
 #       .paths = .{ "build.zig", "src" },
 #   }
 #
-# The custom zon-dot lex matcher distinguishes struct (map) and tuple (list)
-# openings at lex time by peeking ahead:
-#   .{  followed by  .ident =    -> emits #OB  (struct / map)
-#   .{  otherwise                -> emits #OS  (tuple / list)
-# Both close on } which lexes as #CB. The list rules below use #CB (not
-# the default #CS) as the list terminator so that the single } character
-# closes both struct and tuple literals.
+# Lex strategy:
+#   . is a fixed token (#DT) and {, } are the usual #OB / #CB.
+#   The default text lexer produces #TX tokens for bare identifiers (which
+#   are only ever legal after a . in ZON). The grammar below reassembles
+#   these tokens into struct, tuple, pair and enum-literal constructs using
+#   multi-token alt lookahead — so the plugin needs no custom matcher for
+#   .{ or .identifier.
 #
-# A bare .identifier emits #TX with val = identifier (the leading dot is
-# stripped). This token is both a valid KEY (when followed by =) and a
-# valid VAL (when used as an enum literal).
+# Only two things the lexer still does are Zig-specific enough to warrant
+# their own matchers (both declared in the plugin code):
+#   - zonMultiString: consecutive \\-prefixed lines.
+#   - zonChar:        'x', '\n', '\xNN', '\u{...}' literals.
+#
+# Field-key vs value disambiguation:
+#   KEY is narrowed to [#TX] so only identifiers can appear on the left of
+#   =. VAL is narrowed to [#NR, #ST, #VL] so a bare identifier cannot
+#   stand in as a value — enum literals must be written .name.
 #
 # The grammar is applied with { rule: { alt: { g: 'zon' } } } so every
 # alt below is automatically tagged with the 'zon' group.
 #
-# All Jsonic option overrides that can be expressed declaratively live
-# in the options: block below. Two overrides remain in plugin code
-# because they cannot appear in grammar text:
+# Two option overrides still live in plugin code because they can't appear
+# in grammar text:
 #   - fixed.token   (null values to delete tokens; the Go MapToOptions
 #                   does not translate this key)
 #   - lex.match     (holds closures over plugin options)
@@ -69,8 +74,12 @@ const grammarText = `
       start: 'val'
     }
     tokenSet: {
-      # ZON field names are identifiers only.
+      # Field names are identifiers only (no strings or numbers as keys).
       KEY: ['#TX']
+      # Bare identifiers are NOT valid values — force enum literals to be
+      # written as .name. VAL omits #TX so a stray foo is a syntax
+      # error rather than a silent string.
+      VAL: ['#NR' '#ST' '#VL']
     }
     string: {
       chars: '"'
@@ -107,37 +116,83 @@ const grammarText = `
         'null': { val: null }
       }
     }
-    # The default jsonic text matcher is disabled; identifiers are only
-    # produced by the custom zonDot matcher declared in the plugin.
+    # The default text lexer produces #TX tokens for bare identifiers.
     text: {
-      lex: false
+      lex: true
     }
   }
 
-  rule: val: open: [
-    # Empty .{} -> empty list.
-    { s: '#OS #CB' b: 2 p: list g: 'list,empty' }
-  ]
+  rule: val: open: {
+    alts: [
+      # Empty .{}  -> empty list.
+      { s: '#DT #OB #CB' b: 3 p: list g: 'list,empty' }
+      # Struct literal: .{ .key = ...  (5-token lookahead).
+      { s: '#DT #OB #DT #TX #CL' b: 5 p: map g: 'map' }
+      # Tuple literal: .{ value, ... }
+      { s: '#DT #OB' b: 2 p: list g: 'list' }
+      # Enum literal used as a value: .name
+      { s: '#DT #TX' a: '@enum-val' g: 'enum' }
+    ]
+    # Remove the default '#OB p:map' and '#OS p:list' json alts, which
+    # would otherwise let a bare { or [ open a struct or list.
+    inject: { delete: [-3 -2] }
+  }
 
-  rule: list: open: [
-    { s: '#OS #CB' b: 1 g: 'list,empty' }
-    { s: '#OS' p: elem g: 'list,open' }
-  ]
-  rule: list: close: [
-    { s: '#CB' g: 'list,close' }
-  ]
+  rule: map: open: {
+    alts: [
+      { s: '#DT #OB' p: pair g: 'map,open' }
+    ]
+    # Remove the default '#OB #CB' (empty map) and '#OB p:pair' json alts.
+    inject: { delete: [-2 -1] }
+  }
+  # map.close stays default: matches #CB.
 
-  rule: elem: close: [
-    { s: '#CA #CB' b: 1 g: 'elem,trailing' }
-    { s: '#CA' r: elem g: 'elem,next' }
-    { s: '#CB' b: 1 g: 'elem,end' }
-  ]
+  rule: list: open: {
+    alts: [
+      { s: '#DT #OB #CB' b: 1 g: 'list,empty' }
+      { s: '#DT #OB' p: elem g: 'list,open' }
+    ]
+    # Remove the default '#OS #CS' and '#OS p:elem' json alts.
+    inject: { delete: [-2 -1] }
+  }
+  rule: list: close: {
+    alts: [
+      { s: '#CB' g: 'list,close' }
+    ]
+    # Default list.close matches '#CS' which we never emit; remove it so
+    # the list cleanly closes on '}' (#CB) only.
+    inject: { delete: [-1] }
+  }
 
-  rule: pair: close: [
-    { s: '#CA #CB' b: 1 g: 'pair,trailing' }
-    { s: '#CA' r: pair g: 'pair,next' }
-    { s: '#CB' b: 1 g: 'pair,end' }
-  ]
+  rule: pair: open: {
+    alts: [
+      { s: '#DT #TX #CL' p: val a: '@pairkey' u: { pair: true } g: 'pair' }
+    ]
+    # Remove the default '#KEY #CL' json alt: its @pairkey action reads
+    # r.o[0] which is now the '.' token, not the field name.
+    inject: { delete: [-1] }
+  }
+  rule: pair: close: {
+    alts: [
+      { s: '#CA #CB' b: 1 g: 'pair,trailing' }
+      { s: '#CA' r: pair g: 'pair,next' }
+      { s: '#CB' b: 1 g: 'pair,end' }
+    ]
+    # Default pair.close already has '#CB b:1' and '#CA r:pair' — remove
+    # those duplicates while preserving the '#ZZ' finish alt.
+    inject: { delete: [-3 -2] }
+  }
+
+  rule: elem: close: {
+    alts: [
+      { s: '#CA #CB' b: 1 g: 'elem,trailing' }
+      { s: '#CA' r: elem g: 'elem,next' }
+      { s: '#CB' b: 1 g: 'elem,end' }
+    ]
+    # Default elem.close has '#CA r:elem' and '#CS b:1' — remove them
+    # (we close on '}' via #CB), keeping the '#ZZ' finish alt.
+    inject: { delete: [-3 -2] }
+  }
 }
 `
 // --- END EMBEDDED zon-grammar.jsonic ---
@@ -154,31 +209,35 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 	charAsNumber := toBool(options["charAsNumber"])
 	enumTag := toString(options["enumTag"])
 
-	// If enumTag is set, wrap enum-literal values into `{ [enumTag]: name }`.
-	// Runs before the default `@val-bc` (via /prepend) so it takes precedence.
-	refs := map[jsonic.FuncRef]any{}
-	if enumTag != "" {
-		refs["@val-bc/prepend"] = jsonic.StateAction(func(r *jsonic.Rule, _ *jsonic.Context) {
-			if !jsonic.IsUndefined(r.Node) {
+	// Grammar actions:
+	//   @pairkey  - capture the identifier at r.O[1] as the pair key
+	//               (the 3-token 'DT TX CL' match puts the name in slot 1).
+	//   @enum-val - produce the value for a `.name` enum literal appearing
+	//               as a value; wrap in map[string]any{enumTag: name} when
+	//               configured.
+	refs := map[jsonic.FuncRef]any{
+		"@pairkey": jsonic.AltAction(func(r *jsonic.Rule, _ *jsonic.Context) {
+			if len(r.O) < 2 || r.O[1] == nil {
 				return
 			}
-			if r.Child != nil && !jsonic.IsUndefined(r.Child.Node) {
+			tkn := r.O[1]
+			if s, ok := tkn.Val.(string); ok {
+				r.U["key"] = s
+			} else {
+				r.U["key"] = tkn.Src
+			}
+		}),
+		"@enum-val": jsonic.AltAction(func(r *jsonic.Rule, _ *jsonic.Context) {
+			if len(r.O) < 2 || r.O[1] == nil {
 				return
 			}
-			if r.OS == 0 || r.O0 == nil {
-				return
-			}
-			tkn := r.O0
-			if tkn.Use == nil {
-				return
-			}
-			if _, ok := tkn.Use["zonEnum"]; !ok {
-				return
-			}
-			if name, ok := tkn.Val.(string); ok {
+			name, _ := r.O[1].Val.(string)
+			if enumTag != "" {
 				r.Node = map[string]any{enumTag: name}
+			} else {
+				r.Node = name
 			}
-		})
+		}),
 	}
 
 	gs, err := parseGrammarText(grammarText, refs)
@@ -189,16 +248,18 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 	// the grammar text (see zon-grammar.jsonic) and are translated through
 	// gs.OptionsMap. The two that cannot are applied here via gs.Options
 	// (jsonic.Grammar applies both):
-	//   - fixed.token  uses nil pointers to delete entries, and is not
-	//                  translated by MapToOptions
-	//   - lex.match    holds matcher closures that capture plugin options
+	//   - fixed.token  registers `.` as #DT and deletes `[`/`]`; not
+	//                  translated by MapToOptions.
+	//   - lex.match    holds matcher closures that capture plugin options.
+	dotSrc := "."
 	eqSrc := "="
 	gs.Options = &jsonic.Options{
 		Fixed: &jsonic.FixedOptions{
 			Token: map[string]*string{
-				// Bare `{`, `[`, `]` are not valid in ZON. `.{` is handled by
-				// the custom zonDot lex matcher below.
-				"#OB": nil,
+				// Register `.` as its own token so the grammar can match
+				// `#DT #OB`, `#DT #TX`, etc. via multi-token alt lookahead.
+				"#DT": &dotSrc,
+				// Bare `[`/`]` are not valid in ZON.
 				"#OS": nil,
 				"#CS": nil,
 				// `=` replaces `:` as the key/value separator.
@@ -207,7 +268,6 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 		},
 		Lex: &jsonic.LexOptions{
 			Match: map[string]*jsonic.MatchSpec{
-				"zonDot":         {Order: 100000, Make: buildZonDotMatcher()},
 				"zonMultiString": {Order: 110000, Make: buildZonMultiStringMatcher()},
 				"zonChar":        {Order: 120000, Make: buildZonCharMatcher(charAsNumber)},
 			},
@@ -275,100 +335,6 @@ func MakeJsonic(opts ...ZonOptions) *jsonic.Jsonic {
 // wrapper around MakeJsonic(opts...).Parse(src).
 func Parse(src string, opts ...ZonOptions) (any, error) {
 	return MakeJsonic(opts...).Parse(src)
-}
-
-// Custom lex matcher for `.`-prefixed tokens:
-//
-//	`.{`          -> #OB if followed by `.ident =`, else #OS
-//	`.identifier` -> #TX (Val = identifier, Use["zonEnum"] = true)
-//
-// Runs ahead of the fixed-token matcher so it reliably owns the `.` prefix.
-func buildZonDotMatcher() jsonic.MakeLexMatcher {
-	return func(_ *jsonic.LexConfig, _ *jsonic.Options) jsonic.LexMatcher {
-		return func(lex *jsonic.Lex, _ *jsonic.Rule) *jsonic.Token {
-			pnt := lex.Cursor()
-			src := lex.Src
-			sI := pnt.SI
-			if sI >= len(src) || src[sI] != '.' {
-				return nil
-			}
-
-			// `.{` opens a struct literal. Decide map vs list by peeking.
-			if sI+1 < len(src) && src[sI+1] == '{' {
-				var tkn *jsonic.Token
-				if peekIsMapOpen(src, sI+2) {
-					tkn = lex.Token("#OB", jsonic.TinOB, nil, ".{")
-				} else {
-					tkn = lex.Token("#OS", jsonic.TinOS, nil, ".{")
-				}
-				pnt.SI = sI + 2
-				pnt.CI += 2
-				return tkn
-			}
-
-			// `.identifier` - field name or enum literal.
-			if sI+1 >= len(src) || !isIdStart(src[sI+1]) {
-				return nil
-			}
-			eI := sI + 1
-			for eI < len(src) && isIdCont(src[eI]) {
-				eI++
-			}
-
-			srcText := src[sI:eI]
-			name := src[sI+1 : eI]
-			tkn := lex.Token("#TX", jsonic.TinTX, name, srcText)
-			tkn.Use = map[string]any{"zonEnum": true}
-			pnt.SI = eI
-			pnt.CI += eI - sI
-			return tkn
-		}
-	}
-}
-
-// peekIsMapOpen returns true if the source position inside `.{ ... }` begins
-// with `<ws>.ident<ws>=`, meaning a struct/map literal rather than a tuple.
-func peekIsMapOpen(src string, start int) bool {
-	i := skipInsig(src, start)
-	if i >= len(src) || src[i] != '.' {
-		return false
-	}
-	i++
-	if i >= len(src) || !isIdStart(src[i]) {
-		return false
-	}
-	i++
-	for i < len(src) && isIdCont(src[i]) {
-		i++
-	}
-	i = skipInsig(src, i)
-	return i < len(src) && src[i] == '='
-}
-
-// skipInsig advances past whitespace, newlines, and `//` line comments.
-func skipInsig(src string, i int) int {
-	for i < len(src) {
-		c := src[i]
-		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
-			i++
-		} else if c == '/' && i+1 < len(src) && src[i+1] == '/' {
-			i += 2
-			for i < len(src) && src[i] != '\n' && src[i] != '\r' {
-				i++
-			}
-		} else {
-			break
-		}
-	}
-	return i
-}
-
-func isIdStart(c byte) bool {
-	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'
-}
-
-func isIdCont(c byte) bool {
-	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'
 }
 
 // Multi-line Zig strings: consecutive lines starting with `\\`. Each `\\`
@@ -588,20 +554,64 @@ func parseGrammarText(text string, refs map[jsonic.FuncRef]any) (*jsonic.Grammar
 		}
 		grs := &jsonic.GrammarRuleSpec{}
 		if openDef, ok := rd["open"]; ok {
-			grs.Open = buildGrammarAlts(openDef)
+			grs.Open = buildGrammarAltsOrSpec(openDef)
 		}
 		if closeDef, ok := rd["close"]; ok {
-			grs.Close = buildGrammarAlts(closeDef)
+			grs.Close = buildGrammarAltsOrSpec(closeDef)
 		}
 		gs.Rule[name] = grs
 	}
 	return gs, nil
 }
 
-// buildGrammarAlts converts a parsed-jsonic alt array into []*GrammarAltSpec.
-func buildGrammarAlts(def any) []*jsonic.GrammarAltSpec {
-	arr, ok := def.([]any)
+// buildGrammarAltsOrSpec accepts either a plain []any of alt maps (the
+// legacy form) or a map with `alts: [...]` and optional `inject: {...}`
+// modifiers (append, delete, move) — matching jsonic's internal
+// parseGrammarAltsOrSpec helper.
+func buildGrammarAltsOrSpec(def any) any {
+	if arr, ok := def.([]any); ok {
+		return buildGrammarAlts(arr)
+	}
+	m, ok := def.(map[string]any)
 	if !ok {
+		return nil
+	}
+	altsRaw, hasAlts := m["alts"].([]any)
+	if !hasAlts {
+		return nil
+	}
+	spec := &jsonic.GrammarAltListSpec{Alts: buildGrammarAlts(altsRaw)}
+	if injectRaw, ok := m["inject"].(map[string]any); ok {
+		inj := &jsonic.GrammarInjectSpec{}
+		if appendV, ok := injectRaw["append"].(bool); ok {
+			inj.Append = appendV
+		}
+		if del, ok := injectRaw["delete"].([]any); ok {
+			for _, d := range del {
+				if f, ok := d.(float64); ok {
+					inj.Delete = append(inj.Delete, int(f))
+				} else if i, ok := d.(int); ok {
+					inj.Delete = append(inj.Delete, i)
+				}
+			}
+		}
+		if mv, ok := injectRaw["move"].([]any); ok {
+			for _, v := range mv {
+				if f, ok := v.(float64); ok {
+					inj.Move = append(inj.Move, int(f))
+				} else if i, ok := v.(int); ok {
+					inj.Move = append(inj.Move, i)
+				}
+			}
+		}
+		spec.Inject = inj
+	}
+	return spec
+}
+
+// buildGrammarAlts converts a parsed-jsonic alt array into []*GrammarAltSpec.
+func buildGrammarAlts(arr []any) []*jsonic.GrammarAltSpec {
+	if arr == nil {
 		return nil
 	}
 	alts := make([]*jsonic.GrammarAltSpec, 0, len(arr))

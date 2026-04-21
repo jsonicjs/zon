@@ -35,24 +35,29 @@ const grammarText = `
 #       .paths = .{ "build.zig", "src" },
 #   }
 #
-# The custom zon-dot lex matcher distinguishes struct (map) and tuple (list)
-# openings at lex time by peeking ahead:
-#   .{  followed by  .ident =    -> emits #OB  (struct / map)
-#   .{  otherwise                -> emits #OS  (tuple / list)
-# Both close on } which lexes as #CB. The list rules below use #CB (not
-# the default #CS) as the list terminator so that the single } character
-# closes both struct and tuple literals.
+# Lex strategy:
+#   . is a fixed token (#DT) and {, } are the usual #OB / #CB.
+#   The default text lexer produces #TX tokens for bare identifiers (which
+#   are only ever legal after a . in ZON). The grammar below reassembles
+#   these tokens into struct, tuple, pair and enum-literal constructs using
+#   multi-token alt lookahead — so the plugin needs no custom matcher for
+#   .{ or .identifier.
 #
-# A bare .identifier emits #TX with val = identifier (the leading dot is
-# stripped). This token is both a valid KEY (when followed by =) and a
-# valid VAL (when used as an enum literal).
+# Only two things the lexer still does are Zig-specific enough to warrant
+# their own matchers (both declared in the plugin code):
+#   - zonMultiString: consecutive \\\\-prefixed lines.
+#   - zonChar:        'x', '\\n', '\\xNN', '\\u{...}' literals.
+#
+# Field-key vs value disambiguation:
+#   KEY is narrowed to [#TX] so only identifiers can appear on the left of
+#   =. VAL is narrowed to [#NR, #ST, #VL] so a bare identifier cannot
+#   stand in as a value — enum literals must be written .name.
 #
 # The grammar is applied with { rule: { alt: { g: 'zon' } } } so every
 # alt below is automatically tagged with the 'zon' group.
 #
-# All Jsonic option overrides that can be expressed declaratively live
-# in the options: block below. Two overrides remain in plugin code
-# because they cannot appear in grammar text:
+# Two option overrides still live in plugin code because they can't appear
+# in grammar text:
 #   - fixed.token   (null values to delete tokens; the Go MapToOptions
 #                   does not translate this key)
 #   - lex.match     (holds closures over plugin options)
@@ -66,8 +71,12 @@ const grammarText = `
       start: 'val'
     }
     tokenSet: {
-      # ZON field names are identifiers only.
+      # Field names are identifiers only (no strings or numbers as keys).
       KEY: ['#TX']
+      # Bare identifiers are NOT valid values — force enum literals to be
+      # written as .name. VAL omits #TX so a stray foo is a syntax
+      # error rather than a silent string.
+      VAL: ['#NR' '#ST' '#VL']
     }
     string: {
       chars: '"'
@@ -104,37 +113,83 @@ const grammarText = `
         'null': { val: null }
       }
     }
-    # The default jsonic text matcher is disabled; identifiers are only
-    # produced by the custom zonDot matcher declared in the plugin.
+    # The default text lexer produces #TX tokens for bare identifiers.
     text: {
-      lex: false
+      lex: true
     }
   }
 
-  rule: val: open: [
-    # Empty .{} -> empty list.
-    { s: '#OS #CB' b: 2 p: list g: 'list,empty' }
-  ]
+  rule: val: open: {
+    alts: [
+      # Empty .{}  -> empty list.
+      { s: '#DT #OB #CB' b: 3 p: list g: 'list,empty' }
+      # Struct literal: .{ .key = ...  (5-token lookahead).
+      { s: '#DT #OB #DT #TX #CL' b: 5 p: map g: 'map' }
+      # Tuple literal: .{ value, ... }
+      { s: '#DT #OB' b: 2 p: list g: 'list' }
+      # Enum literal used as a value: .name
+      { s: '#DT #TX' a: '@enum-val' g: 'enum' }
+    ]
+    # Remove the default '#OB p:map' and '#OS p:list' json alts, which
+    # would otherwise let a bare { or [ open a struct or list.
+    inject: { delete: [-3 -2] }
+  }
 
-  rule: list: open: [
-    { s: '#OS #CB' b: 1 g: 'list,empty' }
-    { s: '#OS' p: elem g: 'list,open' }
-  ]
-  rule: list: close: [
-    { s: '#CB' g: 'list,close' }
-  ]
+  rule: map: open: {
+    alts: [
+      { s: '#DT #OB' p: pair g: 'map,open' }
+    ]
+    # Remove the default '#OB #CB' (empty map) and '#OB p:pair' json alts.
+    inject: { delete: [-2 -1] }
+  }
+  # map.close stays default: matches #CB.
 
-  rule: elem: close: [
-    { s: '#CA #CB' b: 1 g: 'elem,trailing' }
-    { s: '#CA' r: elem g: 'elem,next' }
-    { s: '#CB' b: 1 g: 'elem,end' }
-  ]
+  rule: list: open: {
+    alts: [
+      { s: '#DT #OB #CB' b: 1 g: 'list,empty' }
+      { s: '#DT #OB' p: elem g: 'list,open' }
+    ]
+    # Remove the default '#OS #CS' and '#OS p:elem' json alts.
+    inject: { delete: [-2 -1] }
+  }
+  rule: list: close: {
+    alts: [
+      { s: '#CB' g: 'list,close' }
+    ]
+    # Default list.close matches '#CS' which we never emit; remove it so
+    # the list cleanly closes on '}' (#CB) only.
+    inject: { delete: [-1] }
+  }
 
-  rule: pair: close: [
-    { s: '#CA #CB' b: 1 g: 'pair,trailing' }
-    { s: '#CA' r: pair g: 'pair,next' }
-    { s: '#CB' b: 1 g: 'pair,end' }
-  ]
+  rule: pair: open: {
+    alts: [
+      { s: '#DT #TX #CL' p: val a: '@pairkey' u: { pair: true } g: 'pair' }
+    ]
+    # Remove the default '#KEY #CL' json alt: its @pairkey action reads
+    # r.o[0] which is now the '.' token, not the field name.
+    inject: { delete: [-1] }
+  }
+  rule: pair: close: {
+    alts: [
+      { s: '#CA #CB' b: 1 g: 'pair,trailing' }
+      { s: '#CA' r: pair g: 'pair,next' }
+      { s: '#CB' b: 1 g: 'pair,end' }
+    ]
+    # Default pair.close already has '#CB b:1' and '#CA r:pair' — remove
+    # those duplicates while preserving the '#ZZ' finish alt.
+    inject: { delete: [-3 -2] }
+  }
+
+  rule: elem: close: {
+    alts: [
+      { s: '#CA #CB' b: 1 g: 'elem,trailing' }
+      { s: '#CA' r: elem g: 'elem,next' }
+      { s: '#CB' b: 1 g: 'elem,end' }
+    ]
+    # Default elem.close has '#CA r:elem' and '#CS b:1' — remove them
+    # (we close on '}' via #CB), keeping the '#ZZ' finish alt.
+    inject: { delete: [-3 -2] }
+  }
 }
 `
 // --- END EMBEDDED zon-grammar.jsonic ---
@@ -144,19 +199,20 @@ const Zon: Plugin = (jsonic: Jsonic, options: ZonOptions) => {
   const charAsNumber = !!options.charAsNumber
   const enumTag = options.enumTag || null
 
-  // If enumTag is set, wrap enum-literal values (produced by zonDot) into
-  // `{ [enumTag]: name }` objects. The `/prepend` form runs before the
-  // default `@val-bc` handler sets r.node from the token.
+  // Grammar actions:
+  //   @pairkey  - capture the identifier at r.o[1] as the pair key
+  //               (the 3-token 'DT TX CL' match puts the name in slot 1).
+  //   @enum-val - produce the value for a `.name` enum literal appearing
+  //               as a value; wrap in { [enumTag]: name } when configured.
   const refs: Record<string, Function> = {
-    '@val-bc/prepend': (r: Rule, _ctx: Context) => {
-      if (!enumTag) return
-      if (undefined !== r.node) return
-      if (undefined !== r.child.node) return
-      if (0 === r.os) return
-      const tkn: any = r.o0
-      if (tkn && tkn.use && tkn.use.zonEnum) {
-        r.node = { [enumTag]: tkn.val }
-      }
+    '@pairkey': (r: Rule) => {
+      const tkn: any = r.o[1]
+      r.u.key = tkn && tkn.val !== undefined ? tkn.val : tkn && tkn.src
+    },
+    '@enum-val': (r: Rule) => {
+      const tkn: any = r.o[1]
+      const name: string = tkn && (tkn.val as string)
+      r.node = enumTag ? { [enumTag]: name } : name
     },
   }
 
@@ -165,14 +221,15 @@ const Zon: Plugin = (jsonic: Jsonic, options: ZonOptions) => {
   // All option overrides that can be expressed declaratively live inside
   // the grammar text (see zon-grammar.jsonic). The two that cannot are
   // applied here:
-  //   - fixed.token  uses `null` to delete entries
+  //   - fixed.token  registers `.` as #DT and removes `[`/`]`
   //   - lex.match    holds matcher closures that capture plugin options
   grammarDef.options = {
     fixed: {
       token: {
-        // Bare `{`, `[`, `]` are not valid in ZON. Struct opening is `.{`
-        // which is handled by the custom zonDot lex matcher below.
-        '#OB': null,
+        // Register `.` as its own token so the grammar can match
+        // `#DT #OB`, `#DT #TX`, etc. via multi-token alt lookahead.
+        '#DT': '.',
+        // Bare `[`/`]` are not valid in ZON.
         '#OS': null,
         '#CS': null,
         // `=` replaces `:` as the key/value separator.
@@ -181,7 +238,6 @@ const Zon: Plugin = (jsonic: Jsonic, options: ZonOptions) => {
     },
     lex: {
       match: {
-        zonDot: { order: 1e5, make: buildZonDotMatcher() },
         zonMultiString: { order: 1.1e5, make: buildZonMultiStringMatcher() },
         zonChar: { order: 1.2e5, make: buildZonCharMatcher(charAsNumber) },
       },
@@ -191,89 +247,6 @@ const Zon: Plugin = (jsonic: Jsonic, options: ZonOptions) => {
   // Tag every alt in this grammar with the 'zon' group so callers can
   // selectively exclude zon alts via `rule.exclude: 'zon'`.
   jsonic.grammar(grammarDef, { rule: { alt: { g: 'zon' } } })
-}
-
-// Custom lex matcher for `.`-prefixed tokens.
-//   `.{`            -> #OB if followed by `.ident =`, otherwise #OS
-//   `.identifier`   -> #TX (val = identifier, use.zonEnum = true)
-// Runs ahead of the fixed-token matcher so it reliably owns the `.` prefix.
-function buildZonDotMatcher() {
-  return function makeZonDotMatcher(_cfg: Config, _opts: Options) {
-    return function zonDotMatcher(lex: Lex) {
-      const { pnt } = lex
-      const src: string = lex.src as unknown as string
-      const { sI, cI } = pnt
-      if ('.' !== src[sI]) return undefined
-
-      // `.{` opens a struct literal. Decide map vs list by peeking ahead.
-      if ('{' === src[sI + 1]) {
-        const isMap = peekIsMapOpen(src, sI + 2)
-        const tin = isMap ? '#OB' : '#OS'
-        const tkn = lex.token(tin, undefined, '.{', pnt)
-        pnt.sI = sI + 2
-        pnt.cI = cI + 2
-        return tkn
-      }
-
-      // `.identifier` - field name or enum literal.
-      if (!isIdStart(src.charCodeAt(sI + 1))) return undefined
-      let eI = sI + 1
-      while (eI < src.length && isIdCont(src.charCodeAt(eI))) eI++
-
-      const srcText = src.substring(sI, eI)
-      const name = src.substring(sI + 1, eI)
-      const tkn = lex.token('#TX', name, srcText, pnt, { zonEnum: true })
-      pnt.sI = eI
-      pnt.cI = cI + (eI - sI)
-      return tkn
-    }
-  }
-}
-
-// Returns true if the position inside `.{ ... }` starts with `<ws>.ident<ws>=`,
-// indicating a struct/map literal rather than a tuple/list.
-function peekIsMapOpen(src: string, start: number): boolean {
-  let i = skipInsig(src, start)
-  if ('.' !== src[i]) return false
-  i++
-  if (!isIdStart(src.charCodeAt(i))) return false
-  i++
-  while (i < src.length && isIdCont(src.charCodeAt(i))) i++
-  i = skipInsig(src, i)
-  return '=' === src[i]
-}
-
-// Skip whitespace, newlines, and `//` line comments.
-function skipInsig(src: string, i: number): number {
-  while (i < src.length) {
-    const c = src[i]
-    if (' ' === c || '\t' === c || '\r' === c || '\n' === c) {
-      i++
-    } else if ('/' === c && '/' === src[i + 1]) {
-      i += 2
-      while (i < src.length && '\n' !== src[i] && '\r' !== src[i]) i++
-    } else {
-      break
-    }
-  }
-  return i
-}
-
-function isIdStart(c: number): boolean {
-  return (
-    (65 <= c && c <= 90) || // A-Z
-    (97 <= c && c <= 122) || // a-z
-    95 === c // _
-  )
-}
-
-function isIdCont(c: number): boolean {
-  return (
-    (48 <= c && c <= 57) || // 0-9
-    (65 <= c && c <= 90) ||
-    (97 <= c && c <= 122) ||
-    95 === c
-  )
 }
 
 // Multi-line Zig strings: consecutive lines starting with `\\`.
