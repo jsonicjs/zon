@@ -24,8 +24,68 @@
 #
 # The grammar is applied with { rule: { alt: { g: 'zon' } } } so every
 # alt below is automatically tagged with the 'zon' group.
+#
+# All Jsonic option overrides that can be expressed declaratively live
+# in the options: block below. Two overrides remain in plugin code
+# because they cannot appear in grammar text:
+#   - fixed.token   (null values to delete tokens; the Go MapToOptions
+#                   does not translate this key)
+#   - lex.match     (holds closures over plugin options)
 
 {
+  options: {
+    rule: {
+      # Remove jsonic extensions (implicit maps/lists, top-level commas,
+      # path dives). ZON uses explicit struct literals only.
+      exclude: 'jsonic,imp'
+      start: 'val'
+    }
+    tokenSet: {
+      # ZON field names are identifiers only.
+      KEY: ['#TX']
+    }
+    string: {
+      chars: '"'
+      multiChars: ''
+      # Zig-flavoured escape sequences.
+      escape: {
+        n: '\n'
+        r: '\r'
+        t: '\t'
+        '\\': '\\'
+        '"': '"'
+        "'": "'"
+      }
+      allowUnknown: false
+    }
+    number: {
+      lex: true
+      sep: '_'
+    }
+    # Only // line comments in ZON.
+    comment: {
+      lex: true
+      def: {
+        hash: { lex: false }
+        slash: { line: true start: '//' lex: true eatline: false }
+        multi: { lex: false }
+      }
+    }
+    value: {
+      lex: true
+      def: {
+        'true': { val: true }
+        'false': { val: false }
+        'null': { val: null }
+      }
+    }
+    # The default jsonic text matcher is disabled; identifiers are only
+    # produced by the custom zonDot matcher declared in the plugin.
+    text: {
+      lex: false
+    }
+  }
+
   rule: val: open: [
     # Empty .{} -> empty list.
     { s: '#OS #CB' b: 2 p: list g: 'list,empty' }

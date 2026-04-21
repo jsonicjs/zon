@@ -52,8 +52,68 @@ const grammarText = `
 #
 # The grammar is applied with { rule: { alt: { g: 'zon' } } } so every
 # alt below is automatically tagged with the 'zon' group.
+#
+# All Jsonic option overrides that can be expressed declaratively live
+# in the options: block below. Two overrides remain in plugin code
+# because they cannot appear in grammar text:
+#   - fixed.token   (null values to delete tokens; the Go MapToOptions
+#                   does not translate this key)
+#   - lex.match     (holds closures over plugin options)
 
 {
+  options: {
+    rule: {
+      # Remove jsonic extensions (implicit maps/lists, top-level commas,
+      # path dives). ZON uses explicit struct literals only.
+      exclude: 'jsonic,imp'
+      start: 'val'
+    }
+    tokenSet: {
+      # ZON field names are identifiers only.
+      KEY: ['#TX']
+    }
+    string: {
+      chars: '"'
+      multiChars: ''
+      # Zig-flavoured escape sequences.
+      escape: {
+        n: '\n'
+        r: '\r'
+        t: '\t'
+        '\\': '\\'
+        '"': '"'
+        "'": "'"
+      }
+      allowUnknown: false
+    }
+    number: {
+      lex: true
+      sep: '_'
+    }
+    # Only // line comments in ZON.
+    comment: {
+      lex: true
+      def: {
+        hash: { lex: false }
+        slash: { line: true start: '//' lex: true eatline: false }
+        multi: { lex: false }
+      }
+    }
+    value: {
+      lex: true
+      def: {
+        'true': { val: true }
+        'false': { val: false }
+        'null': { val: null }
+      }
+    }
+    # The default jsonic text matcher is disabled; identifiers are only
+    # produced by the custom zonDot matcher declared in the plugin.
+    text: {
+      lex: false
+    }
+  }
+
   rule: val: open: [
     # Empty .{} -> empty list.
     { s: '#OS #CB' b: 2 p: list g: 'list,empty' }
@@ -125,16 +185,15 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 	if err != nil {
 		return err
 	}
-	// All jsonic option overrides live on the grammar object so the plugin
-	// applies them atomically alongside its rule alts.
+	// All option overrides that can be expressed declaratively live inside
+	// the grammar text (see zon-grammar.jsonic) and are translated through
+	// gs.OptionsMap. The two that cannot are applied here via gs.Options
+	// (jsonic.Grammar applies both):
+	//   - fixed.token  uses nil pointers to delete entries, and is not
+	//                  translated by MapToOptions
+	//   - lex.match    holds matcher closures that capture plugin options
 	eqSrc := "="
 	gs.Options = &jsonic.Options{
-		Rule: &jsonic.RuleOptions{
-			// Remove jsonic extensions (implicit maps/lists, top-level commas,
-			// path dives). ZON uses explicit struct literals only.
-			Exclude: "jsonic,imp",
-			Start:   "val",
-		},
 		Fixed: &jsonic.FixedOptions{
 			Token: map[string]*string{
 				// Bare `{`, `[`, `]` are not valid in ZON. `.{` is handled by
@@ -145,45 +204,6 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 				// `=` replaces `:` as the key/value separator.
 				"#CL": &eqSrc,
 			},
-		},
-		TokenSet: map[string][]string{
-			// ZON field names are identifiers only.
-			"KEY": {"#TX"},
-		},
-		String: &jsonic.StringOptions{
-			Chars:        "\"",
-			MultiChars:   "",
-			Escape:       map[string]string{"n": "\n", "r": "\r", "t": "\t", "\\": "\\", "\"": "\"", "'": "'"},
-			AllowUnknown: boolPtr(false),
-		},
-		Number: &jsonic.NumberOptions{
-			Lex: boolPtr(true),
-			Hex: boolPtr(true),
-			Oct: boolPtr(true),
-			Bin: boolPtr(true),
-			Sep: "_",
-		},
-		Comment: &jsonic.CommentOptions{
-			Lex: boolPtr(true),
-			Def: map[string]*jsonic.CommentDef{
-				"hash":  {Line: true, Start: "#", Lex: boolPtr(false)},
-				"slash": {Line: true, Start: "//", Lex: boolPtr(true)},
-				"multi": {Line: false, Start: "/*", End: "*/", Lex: boolPtr(false)},
-			},
-		},
-		Value: &jsonic.ValueOptions{
-			Lex: boolPtr(true),
-			Def: map[string]*jsonic.ValueDef{
-				"true":  {Val: true},
-				"false": {Val: false},
-				"null":  {Val: nil},
-			},
-		},
-		Text: &jsonic.TextOptions{
-			// Disabled: the default text matcher would consume identifiers,
-			// but in ZON identifiers only appear as `.ident` and are handled
-			// by the custom zonDot matcher.
-			Lex: boolPtr(false),
 		},
 		Lex: &jsonic.LexOptions{
 			Match: map[string]*jsonic.MatchSpec{
@@ -550,6 +570,12 @@ func parseGrammarText(text string, refs map[jsonic.FuncRef]any) (*jsonic.Grammar
 		return nil, fmt.Errorf("zon: grammar text did not parse to a map")
 	}
 	gs := &jsonic.GrammarSpec{Ref: refs}
+	// Hand the declarative options block (if present) to jsonic via
+	// OptionsMap; MapToOptions inside j.Grammar() converts it to a typed
+	// Options value.
+	if optsMap, ok := parsedMap["options"].(map[string]any); ok {
+		gs.OptionsMap = optsMap
+	}
 	ruleMap, ok := parsedMap["rule"].(map[string]any)
 	if !ok {
 		return gs, nil
