@@ -41,6 +41,7 @@
   ],
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "jsonic": "github:jsonicjs/jsonic#main",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {

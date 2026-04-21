@@ -49,31 +49,34 @@ const grammarText = `
 # A bare .identifier emits #TX with val = identifier (the leading dot is
 # stripped). This token is both a valid KEY (when followed by =) and a
 # valid VAL (when used as an enum literal).
+#
+# The grammar is applied with { rule: { alt: { g: 'zon' } } } so every
+# alt below is automatically tagged with the 'zon' group.
 
 {
   rule: val: open: [
     # Empty .{} -> empty list.
-    { s: '#OS #CB' b: 2 p: list g: 'zon,list,empty' }
+    { s: '#OS #CB' b: 2 p: list g: 'list,empty' }
   ]
 
   rule: list: open: [
-    { s: '#OS #CB' b: 1 g: 'zon,list,empty' }
-    { s: '#OS' p: elem g: 'zon,list,open' }
+    { s: '#OS #CB' b: 1 g: 'list,empty' }
+    { s: '#OS' p: elem g: 'list,open' }
   ]
   rule: list: close: [
-    { s: '#CB' g: 'zon,list,close' }
+    { s: '#CB' g: 'list,close' }
   ]
 
   rule: elem: close: [
-    { s: '#CA #CB' b: 1 g: 'zon,elem,trailing' }
-    { s: '#CA' r: elem g: 'zon,elem,next' }
-    { s: '#CB' b: 1 g: 'zon,elem,end' }
+    { s: '#CA #CB' b: 1 g: 'elem,trailing' }
+    { s: '#CA' r: elem g: 'elem,next' }
+    { s: '#CB' b: 1 g: 'elem,end' }
   ]
 
   rule: pair: close: [
-    { s: '#CA #CB' b: 1 g: 'zon,pair,trailing' }
-    { s: '#CA' r: pair g: 'zon,pair,next' }
-    { s: '#CB' b: 1 g: 'zon,pair,end' }
+    { s: '#CA #CB' b: 1 g: 'pair,trailing' }
+    { s: '#CA' r: pair g: 'pair,next' }
+    { s: '#CB' b: 1 g: 'pair,end' }
   ]
 }
 `
@@ -91,8 +94,41 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 	charAsNumber := toBool(options["charAsNumber"])
 	enumTag := toString(options["enumTag"])
 
+	// If enumTag is set, wrap enum-literal values into `{ [enumTag]: name }`.
+	// Runs before the default `@val-bc` (via /prepend) so it takes precedence.
+	refs := map[jsonic.FuncRef]any{}
+	if enumTag != "" {
+		refs["@val-bc/prepend"] = jsonic.StateAction(func(r *jsonic.Rule, _ *jsonic.Context) {
+			if !jsonic.IsUndefined(r.Node) {
+				return
+			}
+			if r.Child != nil && !jsonic.IsUndefined(r.Child.Node) {
+				return
+			}
+			if r.OS == 0 || r.O0 == nil {
+				return
+			}
+			tkn := r.O0
+			if tkn.Use == nil {
+				return
+			}
+			if _, ok := tkn.Use["zonEnum"]; !ok {
+				return
+			}
+			if name, ok := tkn.Val.(string); ok {
+				r.Node = map[string]any{enumTag: name}
+			}
+		})
+	}
+
+	gs, err := parseGrammarText(grammarText, refs)
+	if err != nil {
+		return err
+	}
+	// All jsonic option overrides live on the grammar object so the plugin
+	// applies them atomically alongside its rule alts.
 	eqSrc := "="
-	jsonicOptions := jsonic.Options{
+	gs.Options = &jsonic.Options{
 		Rule: &jsonic.RuleOptions{
 			// Remove jsonic extensions (implicit maps/lists, top-level commas,
 			// path dives). ZON uses explicit struct literals only.
@@ -157,41 +193,14 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 			},
 		},
 	}
-
-	j.SetOptions(jsonicOptions)
-
-	// If enumTag is set, wrap enum-literal values into `{ [enumTag]: name }`.
-	// Runs before the default `@val-bc` (via /prepend) so it takes precedence.
-	refs := map[jsonic.FuncRef]any{}
-	if enumTag != "" {
-		refs["@val-bc/prepend"] = jsonic.StateAction(func(r *jsonic.Rule, _ *jsonic.Context) {
-			if !jsonic.IsUndefined(r.Node) {
-				return
-			}
-			if r.Child != nil && !jsonic.IsUndefined(r.Child.Node) {
-				return
-			}
-			if r.OS == 0 || r.O0 == nil {
-				return
-			}
-			tkn := r.O0
-			if tkn.Use == nil {
-				return
-			}
-			if _, ok := tkn.Use["zonEnum"]; !ok {
-				return
-			}
-			if name, ok := tkn.Val.(string); ok {
-				r.Node = map[string]any{enumTag: name}
-			}
-		})
+	// Tag every alt in this grammar with the 'zon' group so callers can
+	// selectively exclude zon alts via rule.exclude.
+	setting := &jsonic.GrammarSetting{
+		Rule: &jsonic.GrammarSettingRule{
+			Alt: &jsonic.GrammarSettingAlt{G: "zon"},
+		},
 	}
-
-	gs, err := parseGrammarText(grammarText, refs)
-	if err != nil {
-		return err
-	}
-	if err := j.Grammar(gs); err != nil {
+	if err := j.Grammar(gs, setting); err != nil {
 		return fmt.Errorf("zon: failed to apply grammar: %w", err)
 	}
 
@@ -202,6 +211,50 @@ func Zon(j *jsonic.Jsonic, options map[string]any) error {
 var Defaults = map[string]any{
 	"charAsNumber": false,
 	"enumTag":      "",
+}
+
+// ZonOptions is a typed wrapper for common plugin options.
+// Fields are pointers so callers can express "omit" (nil) vs "set".
+type ZonOptions struct {
+	// CharAsNumber, when true, parses Zig char literals ('x') as numeric
+	// code points. When false (default), they are parsed as one-char strings.
+	CharAsNumber *bool
+	// EnumTag, when non-empty, wraps enum literals (.foo used as value) in
+	// map[string]any{<EnumTag>: name} instead of producing the bare string.
+	EnumTag string
+}
+
+func (o ZonOptions) toMap() map[string]any {
+	m := map[string]any{}
+	if o.CharAsNumber != nil {
+		m["charAsNumber"] = *o.CharAsNumber
+	}
+	if o.EnumTag != "" {
+		m["enumTag"] = o.EnumTag
+	}
+	return m
+}
+
+// MakeJsonic returns a reusable Jsonic instance configured for ZON parsing.
+// Use this when parsing multiple ZON strings with the same options.
+func MakeJsonic(opts ...ZonOptions) *jsonic.Jsonic {
+	j := jsonic.Make()
+	var m map[string]any
+	if len(opts) > 0 {
+		m = opts[0].toMap()
+	}
+	if err := j.UseDefaults(Zon, Defaults, m); err != nil {
+		// Plugin registration errors are programming errors with static
+		// inputs; surface them via panic rather than silent misbehavior.
+		panic(fmt.Sprintf("zon: plugin initialisation failed: %v", err))
+	}
+	return j
+}
+
+// Parse parses a ZON string and returns the resulting value. Convenience
+// wrapper around MakeJsonic(opts...).Parse(src).
+func Parse(src string, opts ...ZonOptions) (any, error) {
+	return MakeJsonic(opts...).Parse(src)
 }
 
 // Custom lex matcher for `.`-prefixed tokens:

@@ -47,35 +47,18 @@ parse('.{ 1, 2, 3 }')
 
 ```go
 import zon "github.com/jsonicjs/zon/go"
-import jsonic "github.com/jsonicjs/jsonic/go"
 
-j := jsonic.Make()
-j.UseDefaults(zon.Zon, zon.Defaults)
-
-result, _ := j.Parse(`.{ .name = "Alice", .age = 30 }`)
+result, _ := zon.Parse(`.{ .name = "Alice", .age = 30 }`)
 // map[string]any{"name": "Alice", "age": 30}
 ```
 
-## Supported syntax
+## Documentation
 
-- Anonymous struct literals: `.{ .field = value, ... }`
-- Tuple / array literals: `.{ value, value, ... }`
-- Field names: `.identifier`
-- Enum literals (used as values): `.identifier` (parsed as bare strings)
-- Strings: `"..."` with Zig escape sequences (`\n`, `\r`, `\t`, `\\`, `\"`, `\'`)
-- Multi-line strings: consecutive lines starting with `\\`
-- Numbers: decimal, `0x` hex, `0o` octal, `0b` binary, with `_` separators
-- Character literals: `'x'`, `'\n'`, `'\x41'`, `'\u{1F600}'`
-- Keywords: `true`, `false`, `null`
-- Line comments: `// ...`
-- Trailing commas allowed
+Full documentation following the [Diataxis](https://diataxis.fr)
+framework (tutorials, how-to guides, explanation, reference):
 
-## Options
-
-| Option         | Default | Description                                          |
-| -------------- | ------- | ---------------------------------------------------- |
-| `charAsNumber` | `false` | Parse character literals as numeric code points.     |
-| `enumTag`      | `null`  | If set, wrap enum literals in `{ [enumTag]: name }`. |
+- [TypeScript documentation](doc/zon-ts.md)
+- [Go documentation](doc/zon-go.md)
 
 ## License
 
