@@ -1,6 +1,6 @@
 {
   "name": "@jsonic/zon",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "This plugin allows the [Jsonic](https://jsonic.senecajs.org) JSON parser to support Zig Object Notation (ZON) syntax.",
   "main": "dist/zon.js",
   "type": "commonjs",
@@ -40,9 +40,8 @@
     "LICENSE"
   ],
   "devDependencies": {
-    "@types/node": "^25.6.0",
-    "jsonic": "github:jsonicjs/jsonic#main",
-    "typescript": "^5.9.3"
+    "@types/node": "25.6.0",
+    "typescript": "6.0.3"
   },
   "peerDependencies": {
     "jsonic": ">=2"
